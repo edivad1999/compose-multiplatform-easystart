@@ -1,5 +1,7 @@
 package com.edivad99.common.repositories
 
+import com.edivad99.common.di.RealmTransactionContext
+import com.edivad99.common.di.transaction
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
@@ -10,6 +12,7 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import io.realm.kotlin.types.RealmObject
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.kodein.di.DI
@@ -21,10 +24,10 @@ import java.util.*
 data class LoginRequestData(val username: String, val password: String)
 
 @Serializable
-data class AuthTokenResponseData(val jwt: String, val expAt: Long)
+data class AuthTokenResponseData(val jwt: String, val expAt: Long) : RealmObject
 class CommonRepository(override val di: DI) : DIAware {
 
-    private val bearerTokenStorage = mutableListOf<BearerTokens>()
+    val transactionContext by instance<RealmTransactionContext>()
 
 
     val client = HttpClient(CIO) {
@@ -40,19 +43,34 @@ class CommonRepository(override val di: DI) : DIAware {
 
                 loadTokens {
                     // Load tokens from a local storage and return them as the 'BearerTokens' instance
-                    bearerTokenStorage.last()
+
+                    val token =  transactionContext.transaction {
+                        query(AuthTokenResponseData::class).find().firstOrNull()
+                    }
+                    BearerTokens(token?.jwt ?:"", "")
                 }
 
                 refreshTokens {
-                    BearerTokens(loginApi()?.jwt ?: "", "").also {
-                        bearerTokenStorage.add(it)
+                    val token = loginApi()?.also {
+                        transactionContext.transaction {
+                            write {
+                                val oldTokens= query(AuthTokenResponseData::class).find()
+                                delete(oldTokens)
+                                copyToRealm(it)
+                            }
+
+                        }
                     }
+
+
+                    BearerTokens(token?.jwt ?: "", "")
                 }
 
             }
         }
 
     }
+
     private suspend fun RefreshTokensParams.loginApi() = runCatching {
         client.post(Endpoints.loginEndpoint) {
             markAsRefreshTokenRequest()
